@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Send and Receive Frames with Flask</title>
+</head>
+<body>
+    <h1>相机数据流</h1>
+    <form id="videoForm">
+        <label for="cameraSelect">选择相机:</label>
+        <select id="cameraSelect">
+            <option value="">请选择相机.</option>
+        </select>
+        <br>
+        <label for="dbCheckbox">是否将检测结果发送至数据库?</label>
+        <input type="checkbox" id="dbCheckbox" name="是否将检测结果发送至数据库?" value="checkedValue">
+        <br>
+        <label for="tags"> 输入需检测标签，空置则为检测所有标签(此为测试用途，正式版请用缺陷名称)</label>
+        <br>
+        <input type="text" id="tags" placeholder="person, phone, dog, TV">
+        <br>
+        <button type="button" onclick="startCamera()">Start Camera</button>
+    </form>
+    <p id="tagsLog"></p>
+    <p id="detection">detection results here</p>
+    <p id = "fps"></p>
+    <br>
+    <video id="videoElement" width="640" height="480" autoplay></video>
+    <canvas id="canvasElement" width="640" height="480" style="display:none;"></canvas>
+    <br>
+    <img id="processedImage" width="640" height="480" style="display:none;">
+    <h2>优化输入参数</h2>
+    <form id="listForm">
+        <label for="listInput">输入数列 (e.g., [1,2,3,4,5,...]):</label>
+        <input type="text" id="listInput" name="参数以数列形式输入" required>
+        <br>
+        <label for="targetInput">尝试0到4的数字:</label>
+        <input type="text" id="targetInput" name="目标值输入" required>
+        <button type="submit">Submit</button>
+    </form>
+    <p id="result">optimization results here</p>
+    <h1>输入MYSQL数据库配置</h1>
+    <form id="configForm">
+        <label for="host">Host:</label>
+        <input type="text" id="host" name="host" required><br>
+        <label for="port">Port:</label>
+        <input type="text" id="port" name="port" required><br>
+        <label for="user">User:</label>
+        <input type="text" id="user" name="user" required><br>
+        <label for="password">Password:</label>
+        <input type="password" id="password" name="password" required><br>
+        <label for="database">Database 数据库名称:</label>
+        <input type="text" id="database" name="database" required><br>
+        <button type="submit">Submit</button>
+    </form>
+    <p id="result_db"></p>
+    <script>
+        const video = document.getElementById('videoElement');
+        const canvas = document.getElementById('canvasElement');
+        const processedImage = document.getElementById('processedImage');
+        const ctx = canvas.getContext('2d');
+        let currentStream;
+
+        // 获取相机
+        function getCameras() {
+            navigator.mediaDevices.enumerateDevices()
+                .then(devices => {
+                    const cameras = devices.filter(device => device.kind === 'videoinput');
+                    const cameraSelect = document.getElementById('cameraSelect');
+                    cameras.forEach(camera => {
+                        const option = document.createElement('option');
+                        option.value = camera.deviceId;
+                        option.text = camera.label || `Camera ${cameraSelect.options.length + 1}`;
+                        cameraSelect.appendChild(option);
+                    });
+
+                })
+                .catch(error => {
+                    console.error('Error enumerating devices:', error);
+                });
+        }
+
+        // Start camera with selected deviceId
+        function startCamera() {
+            const deviceId = document.getElementById('cameraSelect').value;
+            if (deviceId) {
+                const constraints = {
+                    video: { deviceId: { exact: deviceId } }
+                };
+                navigator.mediaDevices.getUserMedia(constraints)
+                    .then(stream => {
+                        video.srcObject = stream;
+                        currentStream = stream;
+                        sendFrameToBackend(); // Start sending frames
+                    })
+                    .catch(error => {
+                        console.error('Error accessing camera:', error);
+                    });
+            }
+        }
+
+        // Function to send frame to backend
+        function sendFrameToBackend() {
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = canvas.toDataURL('image/jpeg'); // Get base64 image data
+            const inputString = document.getElementById('tags').value;
+            let stringArray = inputString.split(',').map(item => item.trim());
+            const checkbox = document.getElementById('dbCheckbox');
+            const isChecked = checkbox.checked;
+            const checkStatus = isChecked ? checkbox.value : 'unchecked';
+            try {
+                if (!Array.isArray(stringArray)) {
+                    throw new Error("Input is not a valid list");
+                } else if (stringArray.length == 1 && stringArray[0] == "") {
+                    stringArray = [];
+                }
+            } catch (error) {
+                document.getElementById('tagsLog').innerText = "Invalid list format. Please enter a valid string tag list. tags set to default";
+                stringArray = [];
+            }
+            fetch('/process_image', { //实时图像识别接口
+                method: 'POST',
+                body: JSON.stringify({ image_data: imageData, tags:stringArray, check_value:checkStatus}),
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Response from backend:', data);
+                document.getElementById('fps').innerText = `fps: ${data.fps}`;
+                document.getElementById('detection').innerText = `detected: ${JSON.stringify(data.detection_results, null, 2)}`;
+                // Display processed image on frontend
+                processedImage.src = 'data:image/jpeg;base64,' + data['processed_image'];
+                processedImage.style.display = 'block';
+                // Immediately send another frame
+                requestAnimationFrame(sendFrameToBackend);
+            })
+            .catch(error => {
+                console.error('Error sending frame:', error);
+            });
+        }
+
+        // Event listener for camera selection change
+        /*
+        document.getElementById('cameraSelect').addEventListener('change', event => {
+            const deviceId = event.target.value;
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => {
+                    track.stop();
+                });
+            }
+            startCamera(deviceId);
+        });
+        */
+
+        // Initialize camera selection
+        getCameras();
+        document.getElementById('listForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+            const listInput = document.getElementById('listInput').value;
+            const targetInput = document.getElementById('targetInput').value;
+            let list;
+            let number;  
+            try {
+                inputNumber = parseInt(targetInput);
+                if (!Number.isInteger(inputNumber)) {
+                    throw new Error("Input is not a valid list");
+                }
+            } catch (error) {
+                document.getElementById('result').innerText = "Invalid target format. Please enter a valid integer.";
+                return;
+            }
+            try {
+                
+                list = JSON.parse(listInput);
+                if (!Array.isArray(list)) {
+                    throw new Error("Input is not a valid list");
+                }
+            } catch (error) {
+                document.getElementById('result').innerText = "Invalid list format. Please enter a valid array.";
+                return;
+            }
+            document.getElementById('result').innerText = "优化输入中，请稍后。";
+            fetch('/process_parameter', { // 离线参数优化接口
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ list: list , target: inputNumber})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    document.getElementById('result').innerText = `优化参数组: ${data.op_input}`;
+                } else {
+                    document.getElementById('result').innerText = '优化失败';
+                }
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+                document.getElementById('result').innerText = 'An error occurred. Please try again.';
+            });
+        });
+        document.getElementById('configForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+            const config = {
+                host: document.getElementById('host').value,
+                port: document.getElementById('port').value,
+                user: document.getElementById('user').value,
+                password: document.getElementById('password').value,
+                database: document.getElementById('database').value
+            };
+
+            fetch('/db_config', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(config)
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('result_db').innerText = `Response: ${JSON.stringify(data, null, 2)}`;
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+                document.getElementById('result_db').innerText = 'An error occurred. 请检查输入格式.';
+            });
+        });
+    </script>
+</body>
+</html>
